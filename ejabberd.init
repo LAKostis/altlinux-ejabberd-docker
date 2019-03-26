@@ -1,0 +1,134 @@
+#!/bin/bash
+#
+# ejabberd	XMPP server
+#
+# description:	Fault-tolerant XMPP server.
+#
+# processname:	so many
+# config: 	/etc/ejabberd/ejabberd.yml
+# pidfile: 	nope
+
+WITHOUT_RC_COMPAT=1
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+RETVAL=0
+
+. "${EJABBERD_HOME}/scripts/lib/base_config.sh"
+. "${EJABBERD_HOME}/scripts/lib/config.sh"
+. "${EJABBERD_HOME}/scripts/lib/base_functions.sh"
+. "${EJABBERD_HOME}/scripts/lib/functions.sh"
+
+# discover hostname
+readonly nodename=$(get_nodename)
+
+is_zero ${ERLANG_NODE} \
+    && export ERLANG_NODE="ejabberd@localhost"
+    
+## backward compatibility
+# if ERLANG_NODE is true reset it to "ejabberd" and add
+# hostname to the nodename.
+# else: export ${ERLANG_NODE} with nodename
+if (is_true ${ERLANG_NODE}); then
+    export ERLANG_NODE="ejabberd@${nodename}"
+fi
+
+
+run_scripts() {
+    local run_script_dir="${EJABBERD_HOME}/scripts/${1}"
+    for script in ${run_script_dir}/*.sh ; do
+        if [ -f ${script} -a -x ${script} ] ; then
+            echo "${script}..."
+            ${script}
+        fi
+    done
+}
+
+pre_scripts() {
+    run_scripts "pre"
+}
+
+post_scripts() {
+    run_scripts "post"
+}
+
+stop_scripts() {
+    run_scripts "stop"
+}
+
+ejabberdctl()
+{
+    local action="$1"
+    /usr/sbin/ejabberdctl --ctl-config ${EJABBERD_HOME}/conf/ejabberdctl.cfg $action
+}
+
+start()
+{
+    local child=
+    pre_scripts
+    STRING="Starting ejabberd service: "
+    echo -n "$STRING"
+    exec /usr/sbin/ejabberdctl --ctl-config ${EJABBERD_HOME}/conf/ejabberdctl.cfg "foreground" &
+    child=$!
+    ejabberdctl "started"
+    post_scripts
+    wait $child
+}
+
+_trap()
+{
+    STRING="Stopping ejabberd service: "
+    echo -n "$STRING"
+    stop_scripts
+    ejabberdctl stop
+    RETVAL=$?
+    [ $RETVAL -eq 0 ] && success "$STRING" || failure "$STRING"
+    echo
+    [ $RETVAL -eq 0 ] || return
+    sleep 3
+    action "Stopping erlang portmapper: " epmd -kill
+    RETVAL=$?
+    [ "$RETVAL" -ne 0 ] || rm -f -- "$LOCKFILE"
+    return "$RETVAL"
+}
+
+reload()
+{
+    ejabberdctl reload_config
+}
+
+status()
+{
+    ejabberdctl status
+    RETVAL=$?
+    return "$RETVAL"
+}
+
+# Catch signals and shutdown ejabberd
+trap _trap SIGTERM SIGINT
+
+case "$@" in
+    reload)
+    reload
+    ;;
+    start)
+    start
+    ;;
+    status)
+    status
+    ;;
+    shell)
+    exec "/bin/bash"
+    ;;
+    live)
+    pre_scripts
+    STRING="Starting ejabberd in 'live' mode: "
+    echo -n "$STRING"
+    ejabberdctl live
+    ;;
+    *)
+    exec $@
+    ;;
+esac
+
